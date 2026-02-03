@@ -1,113 +1,113 @@
-import UserWallet from "../models/UserWallet.js";
+import Wallet from "../models/Wallet.js";
 import WalletLedger from "../models/WalletLedger.js";
 
-/** Ensure wallet exists for user */
 export async function getOrCreateWallet(userId) {
-  let wallet = await UserWallet.findOne({ userId });
-  if (!wallet) {
-    wallet = await UserWallet.create({ userId });
-  }
+  let wallet = await Wallet.findOne({ userId });
+  if (!wallet) wallet = await Wallet.create({ userId });
   return wallet;
 }
 
-/** Earn AVD (spinwheel, referral, cashback, etc.) */
-export async function earn(userId, amount, source = "system", referenceId = "") {
-  if (amount <= 0) throw new Error("Amount must be > 0");
+function addToBreakdown(wallet, source, amount) {
+  if (source === "spinwheel") wallet.breakdown.spinwheel += amount;
+  if (source === "affiliate") wallet.breakdown.purchase += amount; // affiliate purchase reward
+  if (source === "subscription") wallet.breakdown.subscription += amount;
+  if (source === "referral") wallet.breakdown.referral += amount;
+  if (source === "admin") wallet.breakdown.manual += amount;
+}
+
+export async function creditWallet({
+  userId,
+  amountAvd,
+  source,
+  reason,
+  bucket = "UNLOCKED",
+  referenceId,
+  lockDays = 0
+}) {
+  if (!userId) throw new Error("userId required");
+  if (!amountAvd || amountAvd <= 0) throw new Error("amountAvd must be > 0");
+  if (!referenceId) throw new Error("referenceId required");
+
   const wallet = await getOrCreateWallet(userId);
 
-  wallet.balance += amount;
-  wallet.totalEarned += amount;
+  // Duplicate protection
+  const uniqueKey = `${reason}:${referenceId}`;
+  const already = await WalletLedger.findOne({ uniqueKey });
+  if (already) return wallet; // ignore duplicate
 
-  if (source === "spinwheel") wallet.earnedFromSpin += amount;
-  if (source === "referral") wallet.earnedFromReferral += amount;
-  if (source === "cashback") wallet.earnedFromCashback += amount;
+  // Apply credit
+  if (bucket === "LOCKED") {
+    wallet.lockedAvd += amountAvd;
+  } else {
+    wallet.unlockedAvd += amountAvd;
+  }
 
-  wallet.updatedAt = new Date();
+  wallet.totalEarned += amountAvd;
+
+  // Breakdown counts total earned by source (even if locked)
+  addToBreakdown(wallet, source, amountAvd);
+
+  await wallet.save();
+
+  const unlockAt =
+    bucket === "LOCKED" && lockDays > 0
+      ? new Date(Date.now() + lockDays * 24 * 60 * 60 * 1000)
+      : null;
+
+  await WalletLedger.create({
+    userId,
+    type: "CREDIT",
+    bucket,
+    reason,
+    source,
+    amountAvd,
+    balancesAfter: {
+      unlockedAvd: wallet.unlockedAvd,
+      lockedAvd: wallet.lockedAvd
+    },
+    referenceId,
+    uniqueKey,
+    unlockAt
+  });
+
+  return wallet;
+}
+
+export async function debitWallet({ userId, amountAvd, referenceId }) {
+  if (!userId) throw new Error("userId required");
+  if (!amountAvd || amountAvd <= 0) throw new Error("amountAvd must be > 0");
+  if (!referenceId) throw new Error("referenceId required");
+
+  const wallet = await getOrCreateWallet(userId);
+
+  if (wallet.unlockedAvd < amountAvd) {
+    throw new Error("Insufficient unlocked balance");
+  }
+
+  const uniqueKey = `SPENT:${referenceId}`;
+  const already = await WalletLedger.findOne({ uniqueKey });
+  if (already) return wallet;
+
+  wallet.unlockedAvd -= amountAvd;
+  wallet.totalSpent += amountAvd;
+
   await wallet.save();
 
   await WalletLedger.create({
     userId,
-    type: "EARN",
-    source,
-    amount,
-    balanceAfter: wallet.balance,
-    referenceId
+    type: "DEBIT",
+    bucket: "UNLOCKED",
+    reason: "SPENT",
+    source: "app",
+    amountAvd: -amountAvd,
+    balancesAfter: {
+      unlockedAvd: wallet.unlockedAvd,
+      lockedAvd: wallet.lockedAvd
+    },
+    referenceId,
+    uniqueKey,
+    unlockAt: null
   });
 
   return wallet;
-}
-
-/** Spend AVD (product payment / discount) */
-export async function spend(userId, amount, source = "order", referenceId = "") {
-  if (amount <= 0) throw new Error("Amount must be > 0");
-  const wallet = await getOrCreateWallet(userId);
-
-  if (wallet.balance < amount) {
-    throw new Error("Insufficient AVD balance");
-  }
-
-  wallet.balance -= amount;
-  wallet.totalSpent += amount;
-  wallet.updatedAt = new Date();
-  await wallet.save();
-
-  await WalletLedger.create({
-    userId,
-    type: "SPEND",
-    source,
-    amount: -amount,
-    balanceAfter: wallet.balance,
-    referenceId
-  });
-
-  return wallet;
-}
-
-/** Withdraw request (App → Blockchain) — Step 1 just records intent */
-export async function requestWithdraw(userId, amount, toWalletAddress) {
-  if (amount <= 0) throw new Error("Amount must be > 0");
-  const wallet = await getOrCreateWallet(userId);
-
-  if (wallet.balance < amount) {
-    throw new Error("Insufficient AVD balance");
-  }
-
-  // Deduct internally
-  wallet.balance -= amount;
-  wallet.updatedAt = new Date();
-  await wallet.save();
-
-  const ledger = await WalletLedger.create({
-    userId,
-    type: "WITHDRAW",
-    source: "blockchain",
-    amount: -amount,
-    balanceAfter: wallet.balance,
-    referenceId: toWalletAddress
-  });
-
-  // In Step 1 we stop here. In Step 2 you will actually send on-chain AVD.
-  return { wallet, ledger };
-}
-
-/** Deposit (Blockchain → App) — Step 1: credit after manual/admin verification */
-export async function deposit(userId, amount, txHash) {
-  if (amount <= 0) throw new Error("Amount must be > 0");
-  const wallet = await getOrCreateWallet(userId);
-
-  wallet.balance += amount;
-  wallet.totalEarned += amount;
-  wallet.updatedAt = new Date();
-  await wallet.save();
-
-  const ledger = await WalletLedger.create({
-    userId,
-    type: "DEPOSIT",
-    source: "blockchain",
-    amount,
-    balanceAfter: wallet.balance,
-    referenceId: txHash
-  });
-
-  return { wallet, ledger };
 }
