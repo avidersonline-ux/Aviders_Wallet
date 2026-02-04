@@ -111,3 +111,22 @@ export async function debitWallet({ userId, amountAvd, referenceId }) {
 
   return wallet;
 }
+
+// Helper aliases for routes
+export const earn = async (userId, amount, source, referenceId) => {
+  return creditWallet({ userId, amountAvd: amount, source, reason: source, referenceId });
+};
+
+export const spend = async (userId, amount, source, referenceId) => {
+  return debitWallet({ userId, amountAvd: amount, referenceId });
+};
+
+export async function requestWithdraw(userId, amount, toWallet) {
+  // Placeholder implementation
+  return { success: true, message: "Withdrawal requested (placeholder)" };
+}
+
+export async function deposit(userId, amount, txHash) {
+  // Placeholder implementation
+  return { success: true, message: "Deposit recorded (placeholder)" };
+}
