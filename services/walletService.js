@@ -1,22 +1,47 @@
 import Wallet from "../models/Wallet.js";
 import WalletLedger from "../models/WalletLedger.js";
 
+/**
+ * Get or create wallet
+ */
 export async function getOrCreateWallet(userId) {
+  if (!userId) throw new Error("userId required");
+
   let wallet = await Wallet.findOne({ userId });
-  if (!wallet) wallet = await Wallet.create({ userId });
+  if (!wallet) {
+    wallet = await Wallet.create({
+      userId,
+      unlockedAvd: 0,
+      lockedAvd: 0,
+      totalEarned: 0,
+      totalSpent: 0,
+      breakdown: {},
+    });
+  }
   return wallet;
 }
 
+/**
+ * Update breakdown safely
+ */
 function addToBreakdown(wallet, source, amount) {
   if (!wallet.breakdown) wallet.breakdown = {};
-  
-  if (source === "spinwheel") wallet.breakdown.spinwheel = (wallet.breakdown.spinwheel || 0) + amount;
-  if (source === "affiliate") wallet.breakdown.purchase = (wallet.breakdown.purchase || 0) + amount;
-  if (source === "subscription") wallet.breakdown.subscription = (wallet.breakdown.subscription || 0) + amount;
-  if (source === "referral") wallet.breakdown.referral = (wallet.breakdown.referral || 0) + amount;
-  if (source === "admin") wallet.breakdown.manual = (wallet.breakdown.manual || 0) + amount;
+
+  if (source === "spinwheel")
+    wallet.breakdown.spinwheel = (wallet.breakdown.spinwheel || 0) + amount;
+  if (source === "affiliate")
+    wallet.breakdown.purchase = (wallet.breakdown.purchase || 0) + amount;
+  if (source === "subscription")
+    wallet.breakdown.subscription = (wallet.breakdown.subscription || 0) + amount;
+  if (source === "referral")
+    wallet.breakdown.referral = (wallet.breakdown.referral || 0) + amount;
+  if (source === "admin")
+    wallet.breakdown.manual = (wallet.breakdown.manual || 0) + amount;
 }
 
+/**
+ * CREDIT WALLET (IDEMPOTENT)
+ */
 export async function creditWallet({
   userId,
   amountAvd,
@@ -24,7 +49,7 @@ export async function creditWallet({
   reason,
   bucket = "UNLOCKED",
   referenceId,
-  lockDays = 0
+  lockDays = 0,
 }) {
   if (!userId) throw new Error("userId required");
   if (!amountAvd || amountAvd <= 0) throw new Error("amountAvd must be > 0");
@@ -32,10 +57,15 @@ export async function creditWallet({
 
   const wallet = await getOrCreateWallet(userId);
 
+  // 🔒 Idempotency protection
   const uniqueKey = `${reason}:${referenceId}`;
-  const already = await WalletLedger.findOne({ uniqueKey });
-  if (already) return wallet;
+  const already = await WalletLedger.findOne({ uniqueKey }).lean();
+  if (already) {
+    // Treat as SUCCESS (important for spin sync)
+    return wallet;
+  }
 
+  // Apply credit
   if (bucket === "LOCKED") {
     wallet.lockedAvd += amountAvd;
   } else {
@@ -61,16 +91,19 @@ export async function creditWallet({
     amountAvd,
     balancesAfter: {
       unlockedAvd: wallet.unlockedAvd,
-      lockedAvd: wallet.lockedAvd
+      lockedAvd: wallet.lockedAvd,
     },
     referenceId,
     uniqueKey,
-    unlockAt
+    unlockAt,
   });
 
   return wallet;
 }
 
+/**
+ * DEBIT WALLET (IDEMPOTENT)
+ */
 export async function debitWallet({ userId, amountAvd, referenceId }) {
   if (!userId) throw new Error("userId required");
   if (!amountAvd || amountAvd <= 0) throw new Error("amountAvd must be > 0");
@@ -83,7 +116,7 @@ export async function debitWallet({ userId, amountAvd, referenceId }) {
   }
 
   const uniqueKey = `SPENT:${referenceId}`;
-  const already = await WalletLedger.findOne({ uniqueKey });
+  const already = await WalletLedger.findOne({ uniqueKey }).lean();
   if (already) return wallet;
 
   wallet.unlockedAvd -= amountAvd;
@@ -100,73 +133,42 @@ export async function debitWallet({ userId, amountAvd, referenceId }) {
     amountAvd: -amountAvd,
     balancesAfter: {
       unlockedAvd: wallet.unlockedAvd,
-      lockedAvd: wallet.lockedAvd
+      lockedAvd: wallet.lockedAvd,
     },
     referenceId,
     uniqueKey,
-    unlockAt: null
+    unlockAt: null,
   });
 
   return wallet;
 }
 
+/**
+ * HISTORY
+ */
 export async function getHistory(userId, limit = 20, offset = 0) {
   return WalletLedger.find({ userId })
     .sort({ createdAt: -1 })
     .skip(offset)
-    .limit(limit);
+    .limit(limit)
+    .lean();
 }
 
+/**
+ * PROCESS LOCKED UNLOCKS
+ */
 export async function processUnlocks() {
   const now = new Date();
   const pending = await WalletLedger.find({
     bucket: "LOCKED",
     unlockAt: { $lte: now },
-    type: "CREDIT"
+    type: "CREDIT",
   });
 
   let count = 0;
+
   for (const entry of pending) {
     const wallet = await Wallet.findOne({ userId: entry.userId });
-    if (wallet && wallet.lockedAvd >= entry.amountAvd) {
-      wallet.lockedAvd -= entry.amountAvd;
-      wallet.unlockedAvd += entry.amountAvd;
-      await wallet.save();
+    if (!wallet) continue;
 
-      entry.bucket = "UNLOCKED";
-      entry.reason = "AFFILIATE_UNLOCKED";
-      await entry.save();
-      count++;
-    }
-  }
-  return { unlocked: count };
-}
-
-// Fixed mapping to match WalletLedger Schema enum
-export const earn = async (userId, amount, source, referenceId) => {
-  let reason = "ADMIN_ADJUST";
-  if (source === "spinwheel") reason = "SPIN_WIN";
-  if (source === "referral") reason = "REFERRAL_BONUS";
-  if (source === "affiliate") reason = "PURCHASE_REWARD";
-  if (source === "subscription") reason = "SUBSCRIPTION_BONUS";
-
-  return creditWallet({ 
-    userId, 
-    amountAvd: amount, 
-    source, 
-    reason, 
-    referenceId 
-  });
-};
-
-export const spend = async (userId, amount, source, referenceId) => {
-  return debitWallet({ userId, amountAvd: amount, referenceId });
-};
-
-export async function requestWithdraw(userId, amount, toWallet) {
-  return { success: true, message: "Withdrawal request submitted" };
-}
-
-export async function deposit(userId, amount, txHash) {
-  return { success: true, message: "Deposit detected" };
-}
+    if (wallet.lo
