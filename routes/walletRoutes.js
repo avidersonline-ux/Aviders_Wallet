@@ -6,87 +6,160 @@ import {
   requestWithdraw,
   deposit,
   getHistory,
-  processUnlocks
+  processUnlocks,
 } from "../services/walletService.js";
 
 const router = express.Router();
 
-// Get wallet
+/**
+ * =========================
+ * GET WALLET (MAIN)
+ * =========================
+ * Used by:
+ * - App
+ * - Spin server (balance display)
+ */
 router.get("/:userId", async (req, res) => {
   try {
     const wallet = await getOrCreateWallet(req.params.userId);
-    res.json(wallet);
+
+    res.json({
+      success: true,
+      wallet,
+      balance: (wallet.unlockedAvd || 0) + (wallet.lockedAvd || 0),
+      unlockedAvd: wallet.unlockedAvd || 0,
+      lockedAvd: wallet.lockedAvd || 0,
+      totalEarned: wallet.totalEarned || 0,
+      totalSpent: wallet.totalSpent || 0,
+    });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(400).json({ success: false, error: e.message });
   }
 });
 
-// Get transaction history
+/**
+ * =========================
+ * GET WALLET HISTORY
+ * =========================
+ */
 router.get("/:userId/history", async (req, res) => {
   try {
     const { limit = 20, offset = 0 } = req.query;
-    const history = await getHistory(req.params.userId, parseInt(limit), parseInt(offset));
-    res.json(history);
+
+    const history = await getHistory(
+      req.params.userId,
+      parseInt(limit, 10),
+      parseInt(offset, 10)
+    );
+
+    res.json({
+      success: true,
+      history,
+      count: history.length,
+    });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(400).json({ success: false, error: e.message });
   }
 });
 
-// Earn AVD
+/**
+ * =========================
+ * EARN AVD (CALLED BY SPIN)
+ * =========================
+ */
 router.post("/earn", async (req, res) => {
   try {
     const { userId, amount, source, referenceId } = req.body;
+
+    if (!userId || !amount || !referenceId) {
+      return res.status(400).json({
+        success: false,
+        error: "userId, amount and referenceId are required",
+      });
+    }
+
     const wallet = await earn(userId, amount, source, referenceId);
-    res.json(wallet);
+
+    // IMPORTANT: success=true for spin sync
+    res.json({
+      success: true,
+      wallet,
+      balance: (wallet.unlockedAvd || 0) + (wallet.lockedAvd || 0),
+    });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(400).json({ success: false, error: e.message });
   }
 });
 
-// Spend AVD
+/**
+ * =========================
+ * SPEND AVD
+ * =========================
+ */
 router.post("/spend", async (req, res) => {
   try {
-    const { userId, amount, source, referenceId } = req.body;
-    const wallet = await spend(userId, amount, source, referenceId);
-    res.json(wallet);
+    const { userId, amount, referenceId } = req.body;
+
+    if (!userId || !amount || !referenceId) {
+      return res.status(400).json({
+        success: false,
+        error: "userId, amount and referenceId are required",
+      });
+    }
+
+    const wallet = await spend(userId, amount, "app", referenceId);
+
+    res.json({
+      success: true,
+      wallet,
+      balance: (wallet.unlockedAvd || 0) + (wallet.lockedAvd || 0),
+    });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(400).json({ success: false, error: e.message });
   }
 });
 
-// Withdraw request
+/**
+ * =========================
+ * WITHDRAW REQUEST (PLACEHOLDER)
+ * =========================
+ */
 router.post("/withdraw", async (req, res) => {
   try {
     const { userId, amount, toWallet } = req.body;
     const result = await requestWithdraw(userId, amount, toWallet);
-    res.json(result);
+    res.json({ success: true, ...result });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(400).json({ success: false, error: e.message });
   }
 });
 
-// Deposit record
+/**
+ * =========================
+ * DEPOSIT (PLACEHOLDER)
+ * =========================
+ */
 router.post("/deposit", async (req, res) => {
   try {
     const { userId, amount, txHash } = req.body;
     const result = await deposit(userId, amount, txHash);
-    res.json(result);
+    res.json({ success: true, ...result });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(400).json({ success: false, error: e.message });
   }
 });
 
-// Unlock processing (for cron)
+/**
+ * =========================
+ * PROCESS UNLOCKS (CRON)
+ * =========================
+ */
 router.post("/unlocks", async (req, res) => {
   try {
-    // Optional: Add a secret key to protect this endpoint
-    // if (req.headers['x-cron-secret'] !== process.env.CRON_SECRET) {
-    //   return res.status(401).json({ error: "Unauthorized" });
-    // }
     const result = await processUnlocks();
-    res.json(result);
+    res.json({ success: true, ...result });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(400).json({ success: false, error: e.message });
   }
 });
 
