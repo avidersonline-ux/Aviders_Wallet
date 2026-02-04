@@ -171,4 +171,54 @@ export async function processUnlocks() {
     const wallet = await Wallet.findOne({ userId: entry.userId });
     if (!wallet) continue;
 
-    if (wallet.lo
+    if (wallet.lockedAvd >= entry.amountAvd) {
+      wallet.lockedAvd -= entry.amountAvd;
+      wallet.unlockedAvd += entry.amountAvd;
+      await wallet.save();
+
+      entry.bucket = "UNLOCKED";
+      entry.reason = "AUTO_UNLOCK";
+      await entry.save();
+
+      count++;
+    }
+  }
+
+  return { unlocked: count };
+}
+
+/**
+ * PUBLIC API MAPPINGS
+ */
+
+// ✅ Called by Spin Wheel
+export const earn = async (userId, amount, source, referenceId) => {
+  let reason = "ADMIN_ADJUST";
+
+  if (source === "spinwheel") reason = "SPIN_WIN";
+  if (source === "referral") reason = "REFERRAL_BONUS";
+  if (source === "affiliate") reason = "PURCHASE_REWARD";
+  if (source === "subscription") reason = "SUBSCRIPTION_BONUS";
+
+  return creditWallet({
+    userId,
+    amountAvd: amount,
+    source,
+    reason,
+    referenceId,
+  });
+};
+
+// ✅ Spending
+export const spend = async (userId, amount, source, referenceId) => {
+  return debitWallet({ userId, amountAvd: amount, referenceId });
+};
+
+// Placeholder (future)
+export async function requestWithdraw(userId, amount, toWallet) {
+  return { success: true, message: "Withdrawal request submitted" };
+}
+
+export async function deposit(userId, amount, txHash) {
+  return { success: true, message: "Deposit recorded" };
+}
