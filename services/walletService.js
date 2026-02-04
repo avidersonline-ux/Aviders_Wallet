@@ -8,11 +8,11 @@ export async function getOrCreateWallet(userId) {
 }
 
 function addToBreakdown(wallet, source, amount) {
-  if (source === "spinwheel") wallet.breakdown.spinwheel += amount;
-  if (source === "affiliate") wallet.breakdown.purchase += amount; // affiliate purchase reward
-  if (source === "subscription") wallet.breakdown.subscription += amount;
-  if (source === "referral") wallet.breakdown.referral += amount;
-  if (source === "admin") wallet.breakdown.manual += amount;
+  if (source === "spinwheel") wallet.breakdown.spinwheel += (wallet.breakdown.spinwheel || 0) + amount;
+  if (source === "affiliate") wallet.breakdown.purchase += (wallet.breakdown.purchase || 0) + amount;
+  if (source === "subscription") wallet.breakdown.subscription += (wallet.breakdown.subscription || 0) + amount;
+  if (source === "referral") wallet.breakdown.referral += (wallet.breakdown.referral || 0) + amount;
+  if (source === "admin") wallet.breakdown.manual += (wallet.breakdown.manual || 0) + amount;
 }
 
 export async function creditWallet({
@@ -30,12 +30,10 @@ export async function creditWallet({
 
   const wallet = await getOrCreateWallet(userId);
 
-  // Duplicate protection
   const uniqueKey = `${reason}:${referenceId}`;
   const already = await WalletLedger.findOne({ uniqueKey });
-  if (already) return wallet; // ignore duplicate
+  if (already) return wallet;
 
-  // Apply credit
   if (bucket === "LOCKED") {
     wallet.lockedAvd += amountAvd;
   } else {
@@ -43,8 +41,6 @@ export async function creditWallet({
   }
 
   wallet.totalEarned += amountAvd;
-
-  // Breakdown counts total earned by source (even if locked)
   addToBreakdown(wallet, source, amountAvd);
 
   await wallet.save();
@@ -112,9 +108,42 @@ export async function debitWallet({ userId, amountAvd, referenceId }) {
   return wallet;
 }
 
-// Helper aliases for routes
+export async function getHistory(userId, limit = 20, offset = 0) {
+  return WalletLedger.find({ userId })
+    .sort({ createdAt: -1 })
+    .skip(offset)
+    .limit(limit);
+}
+
+export async function processUnlocks() {
+  const now = new Date();
+  const pending = await WalletLedger.find({
+    bucket: "LOCKED",
+    unlockAt: { $lte: now },
+    type: "CREDIT"
+  });
+
+  let count = 0;
+  for (const entry of pending) {
+    const wallet = await Wallet.findOne({ userId: entry.userId });
+    if (wallet && wallet.lockedAvd >= entry.amountAvd) {
+      wallet.lockedAvd -= entry.amountAvd;
+      wallet.unlockedAvd += entry.amountAvd;
+      await wallet.save();
+
+      // Update the ledger entry to show it's now UNLOCKED
+      entry.bucket = "UNLOCKED";
+      entry.reason = "AFFILIATE_UNLOCKED";
+      await entry.save();
+      count++;
+    }
+  }
+  return { unlocked: count };
+}
+
+// Helper aliases
 export const earn = async (userId, amount, source, referenceId) => {
-  return creditWallet({ userId, amountAvd: amount, source, reason: source, referenceId });
+  return creditWallet({ userId, amountAvd: amount, source, reason: source.toUpperCase(), referenceId });
 };
 
 export const spend = async (userId, amount, source, referenceId) => {
@@ -122,11 +151,9 @@ export const spend = async (userId, amount, source, referenceId) => {
 };
 
 export async function requestWithdraw(userId, amount, toWallet) {
-  // Placeholder implementation
   return { success: true, message: "Withdrawal requested (placeholder)" };
 }
 
 export async function deposit(userId, amount, txHash) {
-  // Placeholder implementation
   return { success: true, message: "Deposit recorded (placeholder)" };
 }
