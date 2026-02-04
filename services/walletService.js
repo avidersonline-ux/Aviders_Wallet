@@ -8,6 +8,7 @@ export async function getOrCreateWallet(userId) {
   if (!userId) throw new Error("userId required");
 
   let wallet = await Wallet.findOne({ userId });
+
   if (!wallet) {
     wallet = await Wallet.create({
       userId,
@@ -15,9 +16,32 @@ export async function getOrCreateWallet(userId) {
       lockedAvd: 0,
       totalEarned: 0,
       totalSpent: 0,
-      breakdown: {},
+      breakdown: {
+        spinwheel: 0,
+        purchase: 0,
+        subscription: 0,
+        referral: 0,
+        manual: 0,
+      },
     });
   }
+
+  // Ensure legacy wallets are safe
+  wallet.unlockedAvd = wallet.unlockedAvd || 0;
+  wallet.lockedAvd = wallet.lockedAvd || 0;
+  wallet.totalEarned = wallet.totalEarned || 0;
+  wallet.totalSpent = wallet.totalSpent || 0;
+
+  if (!wallet.breakdown) {
+    wallet.breakdown = {
+      spinwheel: 0,
+      purchase: 0,
+      subscription: 0,
+      referral: 0,
+      manual: 0,
+    };
+  }
+
   return wallet;
 }
 
@@ -25,18 +49,21 @@ export async function getOrCreateWallet(userId) {
  * Update breakdown safely
  */
 function addToBreakdown(wallet, source, amount) {
-  if (!wallet.breakdown) wallet.breakdown = {};
+  if (!wallet.breakdown) {
+    wallet.breakdown = {
+      spinwheel: 0,
+      purchase: 0,
+      subscription: 0,
+      referral: 0,
+      manual: 0,
+    };
+  }
 
-  if (source === "spinwheel")
-    wallet.breakdown.spinwheel = (wallet.breakdown.spinwheel || 0) + amount;
-  if (source === "affiliate")
-    wallet.breakdown.purchase = (wallet.breakdown.purchase || 0) + amount;
-  if (source === "subscription")
-    wallet.breakdown.subscription = (wallet.breakdown.subscription || 0) + amount;
-  if (source === "referral")
-    wallet.breakdown.referral = (wallet.breakdown.referral || 0) + amount;
-  if (source === "admin")
-    wallet.breakdown.manual = (wallet.breakdown.manual || 0) + amount;
+  if (source === "spinwheel") wallet.breakdown.spinwheel += amount;
+  if (source === "affiliate") wallet.breakdown.purchase += amount;
+  if (source === "subscription") wallet.breakdown.subscription += amount;
+  if (source === "referral") wallet.breakdown.referral += amount;
+  if (source === "admin") wallet.breakdown.manual += amount;
 }
 
 /**
@@ -60,8 +87,9 @@ export async function creditWallet({
   // 🔒 Idempotency protection
   const uniqueKey = `${reason}:${referenceId}`;
   const already = await WalletLedger.findOne({ uniqueKey }).lean();
+
   if (already) {
-    // Treat as SUCCESS (important for spin sync)
+    // Treat duplicate as success (important for spin retry sync)
     return wallet;
   }
 
@@ -117,6 +145,7 @@ export async function debitWallet({ userId, amountAvd, referenceId }) {
 
   const uniqueKey = `SPENT:${referenceId}`;
   const already = await WalletLedger.findOne({ uniqueKey }).lean();
+
   if (already) return wallet;
 
   wallet.unlockedAvd -= amountAvd;
@@ -159,6 +188,7 @@ export async function getHistory(userId, limit = 20, offset = 0) {
  */
 export async function processUnlocks() {
   const now = new Date();
+
   const pending = await WalletLedger.find({
     bucket: "LOCKED",
     unlockAt: { $lte: now },
@@ -177,7 +207,7 @@ export async function processUnlocks() {
       await wallet.save();
 
       entry.bucket = "UNLOCKED";
-      entry.reason = "AUTO_UNLOCK";
+      entry.reason = "AFFILIATE_UNLOCKED"; // must match enum
       await entry.save();
 
       count++;
@@ -211,7 +241,11 @@ export const earn = async (userId, amount, source, referenceId) => {
 
 // ✅ Spending
 export const spend = async (userId, amount, source, referenceId) => {
-  return debitWallet({ userId, amountAvd: amount, referenceId });
+  return debitWallet({
+    userId,
+    amountAvd: amount,
+    referenceId,
+  });
 };
 
 // Placeholder (future)
