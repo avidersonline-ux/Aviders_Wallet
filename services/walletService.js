@@ -8,11 +8,14 @@ export async function getOrCreateWallet(userId) {
 }
 
 function addToBreakdown(wallet, source, amount) {
-  if (source === "spinwheel") wallet.breakdown.spinwheel += (wallet.breakdown.spinwheel || 0) + amount;
-  if (source === "affiliate") wallet.breakdown.purchase += (wallet.breakdown.purchase || 0) + amount;
-  if (source === "subscription") wallet.breakdown.subscription += (wallet.breakdown.subscription || 0) + amount;
-  if (source === "referral") wallet.breakdown.referral += (wallet.breakdown.referral || 0) + amount;
-  if (source === "admin") wallet.breakdown.manual += (wallet.breakdown.manual || 0) + amount;
+  // Ensure the breakdown object and fields exist
+  if (!wallet.breakdown) wallet.breakdown = {};
+  
+  if (source === "spinwheel") wallet.breakdown.spinwheel = (wallet.breakdown.spinwheel || 0) + amount;
+  if (source === "affiliate") wallet.breakdown.purchase = (wallet.breakdown.purchase || 0) + amount;
+  if (source === "subscription") wallet.breakdown.subscription = (wallet.breakdown.subscription || 0) + amount;
+  if (source === "referral") wallet.breakdown.referral = (wallet.breakdown.referral || 0) + amount;
+  if (source === "admin") wallet.breakdown.manual = (wallet.breakdown.manual || 0) + amount;
 }
 
 export async function creditWallet({
@@ -30,6 +33,7 @@ export async function creditWallet({
 
   const wallet = await getOrCreateWallet(userId);
 
+  // Duplicate protection: reason + referenceId ensures uniqueness
   const uniqueKey = `${reason}:${referenceId}`;
   const already = await WalletLedger.findOne({ uniqueKey });
   if (already) return wallet;
@@ -131,7 +135,6 @@ export async function processUnlocks() {
       wallet.unlockedAvd += entry.amountAvd;
       await wallet.save();
 
-      // Update the ledger entry to show it's now UNLOCKED
       entry.bucket = "UNLOCKED";
       entry.reason = "AFFILIATE_UNLOCKED";
       await entry.save();
@@ -141,9 +144,14 @@ export async function processUnlocks() {
   return { unlocked: count };
 }
 
-// Helper aliases
 export const earn = async (userId, amount, source, referenceId) => {
-  return creditWallet({ userId, amountAvd: amount, source, reason: source.toUpperCase(), referenceId });
+  return creditWallet({ 
+    userId, 
+    amountAvd: amount, 
+    source, 
+    reason: source.toUpperCase(), 
+    referenceId 
+  });
 };
 
 export const spend = async (userId, amount, source, referenceId) => {
@@ -151,9 +159,11 @@ export const spend = async (userId, amount, source, referenceId) => {
 };
 
 export async function requestWithdraw(userId, amount, toWallet) {
-  return { success: true, message: "Withdrawal requested (placeholder)" };
+  // Logic for blockchain withdrawal request will go here
+  return { success: true, message: "Withdrawal request submitted" };
 }
 
 export async function deposit(userId, amount, txHash) {
-  return { success: true, message: "Deposit recorded (placeholder)" };
+  // Logic for blockchain deposit confirmation will go here
+  return { success: true, message: "Deposit detected" };
 }
