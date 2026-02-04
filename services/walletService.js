@@ -8,7 +8,6 @@ export async function getOrCreateWallet(userId) {
 }
 
 function addToBreakdown(wallet, source, amount) {
-  // Ensure the breakdown object and fields exist
   if (!wallet.breakdown) wallet.breakdown = {};
   
   if (source === "spinwheel") wallet.breakdown.spinwheel = (wallet.breakdown.spinwheel || 0) + amount;
@@ -33,7 +32,6 @@ export async function creditWallet({
 
   const wallet = await getOrCreateWallet(userId);
 
-  // Duplicate protection: reason + referenceId ensures uniqueness
   const uniqueKey = `${reason}:${referenceId}`;
   const already = await WalletLedger.findOne({ uniqueKey });
   if (already) return wallet;
@@ -144,12 +142,19 @@ export async function processUnlocks() {
   return { unlocked: count };
 }
 
+// Fixed mapping to match WalletLedger Schema enum
 export const earn = async (userId, amount, source, referenceId) => {
+  let reason = "ADMIN_ADJUST";
+  if (source === "spinwheel") reason = "SPIN_WIN";
+  if (source === "referral") reason = "REFERRAL_BONUS";
+  if (source === "affiliate") reason = "PURCHASE_REWARD";
+  if (source === "subscription") reason = "SUBSCRIPTION_BONUS";
+
   return creditWallet({ 
     userId, 
     amountAvd: amount, 
     source, 
-    reason: source.toUpperCase(), 
+    reason, 
     referenceId 
   });
 };
@@ -159,11 +164,9 @@ export const spend = async (userId, amount, source, referenceId) => {
 };
 
 export async function requestWithdraw(userId, amount, toWallet) {
-  // Logic for blockchain withdrawal request will go here
   return { success: true, message: "Withdrawal request submitted" };
 }
 
 export async function deposit(userId, amount, txHash) {
-  // Logic for blockchain deposit confirmation will go here
   return { success: true, message: "Deposit detected" };
 }
