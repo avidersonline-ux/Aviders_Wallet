@@ -1,5 +1,5 @@
 import express from "express";
-import { earn, spend, requestWithdraw, deposit, getOrCreateWallet } from "../services/walletService.js";
+import { earn, spend, getOrCreateWallet, requestWithdraw, deposit } from "../services/walletService.js";
 
 const router = express.Router();
 
